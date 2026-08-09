@@ -258,6 +258,7 @@
     let keepAliveOsc = null;
     let lastAlertTime = 0;
     let lastTradeTimestamp = 0;
+    let activeExchanges = new Set();
     let isArmed = false;
     let pendingReconnect = false;
     let lastTickTs = Date.now();
