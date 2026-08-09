@@ -321,6 +321,31 @@
     });
     loadPrefs();
 
+    // --- iOS/mobile: unlock AudioContext on first user gesture ---
+    function unlockAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function initAudioUnlock() {
+      const unlock = () => {
+        unlockAudio();
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('touchstart', unlock);
+        window.removeEventListener('keydown', unlock);
+        window.removeEventListener('mousedown', unlock);
+      };
+      window.addEventListener('pointerdown', unlock);
+      window.addEventListener('touchstart', unlock);
+      window.addEventListener('keydown', unlock);
+      window.addEventListener('mousedown', unlock);
+    }
+    initAudioUnlock();
+
     // --- Background Keep-Alive Audio Engine ---
     function toggleKeepAlive() {
       const btn = document.getElementById('keepAliveBtn');
@@ -330,12 +355,7 @@
           // Native app: play an imperceptible silent loop in the app's background audio session
           if (!playNativeTone('keepalive')) return;
         } else {
-          if (!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          }
-          if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-          }
+          unlockAudio();
           // Create imperceptible continuous background tone (15Hz sub-audible) to keep iOS WebSockets alive in background
           keepAliveOsc = audioCtx.createOscillator();
           const keepAliveGain = audioCtx.createGain();
@@ -373,8 +393,7 @@
         if (playNativeTone(type.toLowerCase())) return;
       }
 
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      unlockAudio();
 
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
