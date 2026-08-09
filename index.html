@@ -257,49 +257,120 @@
     let audioCtx = null;
     let keepAliveOsc = null;
     let lastAlertTime = 0;
-    let activeExchanges = new Set();
     let lastTradeTimestamp = 0;
-    let sockets = [];
     let isArmed = false;
+    let pendingReconnect = false;
+    let lastTickTs = Date.now();
+
+    const FEED_SOURCES = ['Coinbase', 'Kraken', 'Bitstamp', 'Gemini'];
+    const FEED_STALE_MS = 8000;
+    const FEED_TIMEOUT_MS = 10000;
+    let feedSockets = {};
+
+    // --- Native App Bridge Detection ---
+    function isNativeApp() {
+      return !!(
+        (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) ||
+        (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.TonePlayer)
+      );
+    }
+
+    function nativeBridge() {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.TonePlayer) {
+        return window.Capacitor.Plugins.TonePlayer;
+      }
+      return null;
+    }
+
+    function playNativeTone(name) {
+      const tp = nativeBridge();
+      if (!tp) return false;
+      try {
+        Promise.resolve(tp.playTone({ name })).catch(() => {});
+        return true;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    // --- Persisted Preferences (strike, side, audio) ---
+    function loadPrefs() {
+      try {
+        const raw = localStorage.getItem('btcTwapPrefs');
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (p.targetPrice) document.getElementById('targetPrice').value = p.targetPrice;
+        if (p.positionDir) document.getElementById('positionDir').value = p.positionDir;
+        if (p.audioToggle) document.getElementById('audioToggle').value = p.audioToggle;
+      } catch (err) {}
+    }
+
+    function savePrefs() {
+      try {
+        localStorage.setItem('btcTwapPrefs', JSON.stringify({
+          targetPrice: document.getElementById('targetPrice').value,
+          positionDir: document.getElementById('positionDir').value,
+          audioToggle: document.getElementById('audioToggle').value
+        }));
+      } catch (err) {}
+    }
+
+    ['targetPrice', 'positionDir', 'audioToggle'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', savePrefs);
+    });
+    loadPrefs();
 
     // --- Background Keep-Alive Audio Engine ---
     function toggleKeepAlive() {
       const btn = document.getElementById('keepAliveBtn');
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
 
       if (!isArmed) {
-        // Create imperceptible continuous background tone (15Hz sub-audible) to keep iOS WebSockets alive in background
-        keepAliveOsc = audioCtx.createOscillator();
-        const keepAliveGain = audioCtx.createGain();
-        keepAliveOsc.type = 'sine';
-        keepAliveOsc.frequency.setValueAtTime(15, audioCtx.currentTime); // 15 Hz is below human hearing
-        keepAliveGain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-        keepAliveOsc.connect(keepAliveGain);
-        keepAliveGain.connect(audioCtx.destination);
-        keepAliveOsc.start();
+        if (isNativeApp()) {
+          // Native app: play an imperceptible silent loop in the app's background audio session
+          if (!playNativeTone('keepalive')) return;
+        } else {
+          if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+          // Create imperceptible continuous background tone (15Hz sub-audible) to keep iOS WebSockets alive in background
+          keepAliveOsc = audioCtx.createOscillator();
+          const keepAliveGain = audioCtx.createGain();
+          keepAliveOsc.type = 'sine';
+          keepAliveOsc.frequency.setValueAtTime(15, audioCtx.currentTime); // 15 Hz is below human hearing
+          keepAliveGain.gain.setValueAtTime(0.001, audioCtx.currentTime);
+          keepAliveOsc.connect(keepAliveGain);
+          keepAliveGain.connect(audioCtx.destination);
+          keepAliveOsc.start();
+        }
 
         isArmed = true;
         btn.className = "active";
         btn.innerText = "⚡ AUDIO RADAR ACTIVE (Safe to open Robinhood now!)";
       } else {
-        if (keepAliveOsc) keepAliveOsc.stop();
+        if (isNativeApp()) {
+          playNativeTone('stop');
+        } else {
+          if (keepAliveOsc) keepAliveOsc.stop();
+        }
         isArmed = false;
         btn.className = "";
         btn.innerText = "🔊 Arm Background Audio Radar (For Robinhood Multitasking)";
       }
     }
 
-    // --- Web Audio Synth for Warnings & Exits ---
+    // --- Alert Sounds: native in-app, Web Audio fallback ---
     function playSound(type) {
       if (document.getElementById('audioToggle').value !== 'ON') return;
       const now = Date.now();
       if (now - lastAlertTime < 1000) return;
       lastAlertTime = now;
+
+      if (type === 'WARN' || type === 'EXIT') {
+        if (playNativeTone(type.toLowerCase())) return;
+      }
 
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -362,76 +433,140 @@
       }
     }
 
-    // --- 4-Exchange WebSocket Aggregator ---
+    // --- 4-Exchange WebSocket Aggregator (per-feed connection manager) ---
     function initWebSockets() {
-      sockets.forEach(ws => { try { ws.close(); } catch(e){} });
-      sockets = [];
       activeExchanges.clear();
+      FEED_SOURCES.forEach(source => connectFeed(source));
+    }
 
-      function addTrade(source, price, volume) {
-        if (!price || isNaN(price) || !volume || isNaN(volume)) return;
-        const now = Date.now();
-        lastTradeTimestamp = now;
-        activeExchanges.add(source);
-        if (source === 'Coinbase') coinbasePrice = price;
+    function addTrade(source, price, volume) {
+      if (!price || isNaN(price) || !volume || isNaN(volume)) return;
+      const now = Date.now();
+      lastTradeTimestamp = now;
+      if (feedSockets[source]) feedSockets[source].lastTradeTs = now;
+      activeExchanges.add(source);
+      if (source === 'Coinbase') coinbasePrice = price;
 
-        liveTradeBuffer.push({ source, price, volume, ts: now });
+      liveTradeBuffer.push({ source, price, volume, ts: now });
 
-        while (liveTradeBuffer.length > 0 && liveTradeBuffer[0].ts < now - 5000) {
-          liveTradeBuffer.shift();
-        }
-        computeVWM();
-        const statusEl = document.getElementById('wsStatus');
-        statusEl.innerText = `Connected: ${activeExchanges.size}/4 Feeds Active (${Array.from(activeExchanges).join(', ')})`;
-        statusEl.style.color = "#3fb950";
+      while (liveTradeBuffer.length > 0 && liveTradeBuffer[0].ts < now - 5000) {
+        liveTradeBuffer.shift();
       }
+      computeVWM();
+      const statusEl = document.getElementById('wsStatus');
+      statusEl.innerText = `Connected: ${activeExchanges.size}/4 Feeds Active (${Array.from(activeExchanges).join(', ')})`;
+      statusEl.style.color = "#3fb950";
+    }
 
-      // 1. Coinbase
-      const cbWS = new WebSocket('wss://ws-feed.exchange.coinbase.com');
-      cbWS.onopen = () => cbWS.send(JSON.stringify({ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] }));
-      cbWS.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
+    function subscribeMessage(source) {
+      if (source === 'Coinbase') return JSON.stringify({ type: "subscribe", product_ids: ["BTC-USD"], channels: ["ticker"] });
+      if (source === 'Kraken') return JSON.stringify({ event: "subscribe", pair: ["XBT/USD"], subscription: { name: "trade" } });
+      if (source === 'Bitstamp') return JSON.stringify({ event: "bts:subscribe", data: { channel: "live_trades_btcusd" } });
+      return null; // Gemini needs no subscribe message
+    }
+
+    function parseTrade(source, data) {
+      try {
+        const msg = JSON.parse(data);
+        if (source === 'Coinbase') {
           if (msg.type === "ticker" && msg.price) addTrade('Coinbase', parseFloat(msg.price), parseFloat(msg.last_size || 1));
-        } catch(err){}
-      };
-      sockets.push(cbWS);
-
-      // 2. Kraken
-      const krakenWS = new WebSocket('wss://ws.kraken.com');
-      krakenWS.onopen = () => krakenWS.send(JSON.stringify({ event: "subscribe", pair: ["XBT/USD"], subscription: { name: "trade" } }));
-      krakenWS.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
+        } else if (source === 'Kraken') {
           if (Array.isArray(msg) && msg[1]) {
             msg[1].forEach(t => addTrade('Kraken', parseFloat(t[0]), parseFloat(t[1])));
           }
-        } catch(err){}
-      };
-      sockets.push(krakenWS);
-
-      // 3. Bitstamp
-      const bitstampWS = new WebSocket('wss://ws.bitstamp.net');
-      bitstampWS.onopen = () => bitstampWS.send(JSON.stringify({ event: "bts:subscribe", data: { channel: "live_trades_btcusd" } }));
-      bitstampWS.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
+        } else if (source === 'Bitstamp') {
           if (msg.event === "trade" && msg.data) addTrade('Bitstamp', parseFloat(msg.data.price), parseFloat(msg.data.amount));
-        } catch(err){}
-      };
-      sockets.push(bitstampWS);
-
-      // 4. Gemini
-      const geminiWS = new WebSocket('wss://api.gemini.com/v1/marketdata/BTCUSD');
-      geminiWS.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
+        } else if (source === 'Gemini') {
           if (msg.events) {
             msg.events.filter(ev => ev.type === "trade").forEach(ev => addTrade('Gemini', parseFloat(ev.price), parseFloat(ev.amount)));
           }
-        } catch(err){}
+        }
+      } catch(err){}
+    }
+
+    function connectFeed(source) {
+      const existing = feedSockets[source];
+      if (existing && existing.ws && existing.ws.readyState === WebSocket.OPEN) return;
+      if (existing && existing.connectTimer) {
+        clearTimeout(existing.connectTimer);
+        existing.connectTimer = null;
+      }
+
+      const urls = {
+        Coinbase: 'wss://ws-feed.exchange.coinbase.com',
+        Kraken: 'wss://ws.kraken.com',
+        Bitstamp: 'wss://ws.bitstamp.net',
+        Gemini: 'wss://api.gemini.com/v1/marketdata/BTCUSD'
       };
-      sockets.push(geminiWS);
+
+      const state = { ws: null, lastTradeTs: 0, connected: false, connectTimer: null, reconnectTimer: null, tornDown: false };
+      feedSockets[source] = state;
+
+      let ws;
+      try {
+        ws = new WebSocket(urls[source]);
+      } catch(err) {
+        scheduleReconnect(source);
+        return;
+      }
+      state.ws = ws;
+
+      ws.onopen = () => {
+        state.connected = true;
+        const sub = subscribeMessage(source);
+        if (sub) ws.send(sub);
+      };
+
+      ws.onmessage = (e) => {
+        state.lastTradeTs = Date.now();
+        parseTrade(source, e.data);
+      };
+
+      ws.onclose = () => {
+        state.connected = false;
+        activeExchanges.delete(source);
+        scheduleReconnect(source);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch(e){}
+      };
+
+      // Connect-timeout guard: if the feed never opens, force a fresh attempt
+      state.connectTimer = setTimeout(() => {
+        state.connectTimer = null;
+        if (!state.connected && !state.tornDown) {
+          try { ws.close(); } catch(e){}
+        }
+      }, FEED_TIMEOUT_MS);
+    }
+
+    function scheduleReconnect(source) {
+      const state = feedSockets[source];
+      if (!state) return;
+      if (document.hidden) return; // no background reconnect; resume on foreground
+      if (state.reconnectTimer) return;
+      state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        connectFeed(source);
+      }, 3000);
+    }
+
+    function resumeFeeds() {
+      const now = Date.now();
+      let needsBackfill = candleTicks.length === 0;
+      FEED_SOURCES.forEach(source => {
+        const state = feedSockets[source];
+        if (!state || !state.ws || state.ws.readyState !== WebSocket.OPEN || !state.connected) {
+          connectFeed(source);
+        } else if (now - state.lastTradeTs > FEED_STALE_MS) {
+          // zombie feed: force a fresh connection
+          try { state.ws.close(); } catch(e){}
+        }
+      });
+      if (needsBackfill) {
+        fetchHistoricalCandles();
+      }
     }
 
     function computeVWM() {
@@ -451,11 +586,15 @@
       liveSpotPrice = sorted[Math.floor(sorted.length / 2)].price;
     }
 
-    // --- Auto-Reconnect on Tab Switch ---
+    // --- Resume Feeds on Foreground (visibility change, pageshow, time jump) ---
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        fetchHistoricalCandles().then(() => initWebSockets());
+        resumeFeeds();
       }
+    });
+
+    window.addEventListener('pageshow', () => {
+      resumeFeeds();
     });
 
     // --- Engine Loop ---
@@ -469,13 +608,33 @@
       const totalWindowSecs = 900;
       const remainingSecs = Math.max(0, totalWindowSecs - elapsedSecs);
 
+      // Per-feed health: cycle any feed that has gone quiet (zombie) or stalled mid-connect
+      const nowMs = Date.now();
+      FEED_SOURCES.forEach(source => {
+        const state = feedSockets[source];
+        if (state && state.ws && state.connected && (nowMs - state.lastTradeTs > FEED_STALE_MS)) {
+          try { state.ws.close(); } catch(e){} // zombie feed: force reconnect
+        }
+      });
+
+      // Large time jump (device slept / tab suspended): rebuild tick history + feeds
+      if (nowMs - lastTickTs > 60000) {
+        candleTicks = [];
+        pendingReconnect = true;
+      }
+      lastTickTs = nowMs;
+      if (pendingReconnect) {
+        pendingReconnect = false;
+        resumeFeeds();
+        fetchHistoricalCandles();
+      }
+
       const isStale = (Date.now() - lastTradeTimestamp > 4000) && lastTradeTimestamp > 0;
       const banner = document.getElementById('alertBanner');
 
       if (isStale) {
         banner.className = 'status-stale';
         banner.innerText = `FEED FROZEN - RECONNECTING...`;
-        initWebSockets();
         return;
       }
 
