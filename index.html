@@ -294,6 +294,42 @@
       }
     }
 
+    // --- Native Dynamic Island (Live Activity) Bridge ---
+    function liveActivityBridge() {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.TWAPLiveActivity) {
+        return window.Capacitor.Plugins.TWAPLiveActivity;
+      }
+      return null;
+    }
+
+    function pushLiveActivity(state, cushion, timeLeft) {
+      const la = liveActivityBridge();
+      if (!la) return;
+      try {
+        const side = document.getElementById('positionDir').value;
+        Promise.resolve(la.update({ state, side, cushion: Math.round(cushion * 100) / 100, timeLeft })).catch(() => {});
+      } catch (err) {}
+    }
+
+    function setSide(side) {
+      const sel = document.getElementById('positionDir');
+      if (sel.value === side) return;
+      sel.value = side;
+      savePrefs();
+    }
+
+    function initLiveActivityBridge() {
+      const la = liveActivityBridge();
+      if (!la) return;
+      try {
+        la.addListener('twapAction', (data) => {
+          if (data && data.action === 'toggleSide') {
+            setSide(document.getElementById('positionDir').value === 'UNDER' ? 'OVER' : 'UNDER');
+          }
+        }).catch(() => {});
+      } catch (err) {}
+    }
+
     // --- Persisted Preferences (strike, side, audio) ---
     function loadPrefs() {
       try {
@@ -320,6 +356,7 @@
       document.getElementById(id).addEventListener('change', savePrefs);
     });
     loadPrefs();
+    initLiveActivityBridge();
 
     // --- iOS/mobile: unlock AudioContext on first user gesture ---
     function unlockAudio() {
@@ -659,6 +696,7 @@
       if (isStale) {
         banner.className = 'status-stale';
         banner.innerText = `FEED FROZEN - RECONNECTING...`;
+        pushLiveActivity('WARN', 0, remainingSecs);
         return;
       }
 
@@ -741,6 +779,8 @@
         banner.className = 'status-safe';
         banner.innerText = `SAFE: CUSHION HOLDING (GAP: $${cushionGap.toFixed(2)})`;
       }
+
+      pushLiveActivity(isViolating ? 'EXIT' : (isWarning ? 'WARN' : 'SAFE'), cushionGap, remainingSecs);
     }
 
     window.onload = async () => {
