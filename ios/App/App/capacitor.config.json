@@ -1,0 +1,11 @@
+{
+	"appId": "com.benidoe.btctwap",
+	"appName": "BTC TWAP",
+	"webDir": "www",
+	"backgroundColor": "#0e1117",
+	"server": {
+		"url": "https://benidoe.github.io/btc-twap/",
+		"cleartext": false
+	},
+	"packageClassList": []
+}
