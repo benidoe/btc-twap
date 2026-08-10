@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "generate:tones": "node scripts/generate-tones.mjs",
-    "generate:icon": "powershell -ExecutionPolicy Bypass -File scripts/generate-icon.ps1"
+    "generate:icon": "node scripts/generate-icon.mjs"
   },
   "license": "UNLICENSED",
   "dependencies": {
@@ -13,6 +13,7 @@
     "@capacitor/ios": "^8.5.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.5.0"
+    "@capacitor/cli": "^8.5.0",
+    "sharp": "^0.34.5"
   }
 }
