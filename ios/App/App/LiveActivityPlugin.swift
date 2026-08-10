@@ -25,7 +25,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
             CFNotificationCenterGetDarwinNotifyCenter(),
             observer,
             darwinCallback,
-            TWAPToggleNotification as CFString,
+            CFNotificationName(TWAPToggleNotification as CFString),
             nil,
             .deliverImmediately
         )
@@ -55,7 +55,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         lastActivity = activity
         Task {
-            await activity.update(using: contentState)
+            await activity.update(contentState)
             call.resolve()
         }
     }

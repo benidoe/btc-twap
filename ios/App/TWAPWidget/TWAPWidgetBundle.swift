@@ -53,16 +53,16 @@ func flipSide(_ state: TWAPActivityAttributes.ContentState) {
         var newState = state
         newState.side = newSide
         Task {
-            await activity.update(using: newState)
+            await activity.update(newState)
         }
     }
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        TWAPToggleNotification as CFString,
-        nil,
-        nil,
-        true
-    )
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(TWAPToggleNotification as CFString),
+            nil,
+            nil,
+            true
+        )
 }
 
 struct TWAPFlipButton: View {
