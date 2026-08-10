@@ -12,7 +12,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
     public static var shared: TWAPLiveActivityPlugin?
     private var lastActivity: Activity<TWAPActivityAttributes>?
 
-    private let darwinCallback: @convention(c) (CFNotificationCenter?, UnsafeMutableRawPointer?, CFString?, UnsafeRawPointer?, CFDictionary?) -> Void = { _, observer, _, _, _ in
+    private let darwinCallback: CFNotificationCallback = { _, observer, _, _, _ in
         guard let observer else { return }
         let plugin = Unmanaged<TWAPLiveActivityPlugin>.fromOpaque(observer).takeUnretainedValue()
         plugin.notifyListeners("twapAction", data: ["action": "toggleSide"])
@@ -55,7 +55,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         lastActivity = activity
         Task {
-            await activity.update(contentState)
+            await activity.update(ActivityContent(state: contentState, staleDate: nil, relevanceScore: 1.0))
             call.resolve()
         }
     }
@@ -73,7 +73,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
 
         do {
             let attributes = TWAPActivityAttributes()
-            let content = ActivityContent(state: initialState, staleDate: nil, relevanceDate: nil)
+            let content = ActivityContent(state: initialState, staleDate: nil, relevanceScore: 1.0)
             let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
             shared?.lastActivity = activity
         } catch {
@@ -86,7 +86,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
         let activity = shared?.lastActivity ?? Activity<TWAPActivityAttributes>.activities.first
         if let activity = activity {
             Task {
-                await activity.end(activity.content.state, dismissalPolicy: .immediate)
+                await activity.end(activity.content, dismissalPolicy: .immediate)
             }
         }
         shared?.lastActivity = nil
