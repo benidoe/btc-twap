@@ -53,7 +53,7 @@ func flipSide(_ state: TWAPActivityAttributes.ContentState) {
         var newState = state
         newState.side = newSide
         Task {
-            await activity.update(ActivityContent(state: newState, staleDate: nil, relevanceDate: nil))
+            await activity.update(ActivityContent(state: newState, staleDate: nil, relevanceScore: 1.0))
         }
     }
         CFNotificationCenterPostNotification(
