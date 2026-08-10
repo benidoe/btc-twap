@@ -25,7 +25,7 @@ public class TWAPLiveActivityPlugin: CAPPlugin, CAPBridgedPlugin {
             CFNotificationCenterGetDarwinNotifyCenter(),
             observer,
             darwinCallback,
-            CFNotificationName(TWAPToggleNotification as CFString),
+            TWAPToggleNotification as CFString,
             nil,
             .deliverImmediately
         )
