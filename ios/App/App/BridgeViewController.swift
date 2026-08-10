@@ -13,6 +13,6 @@ class BridgeViewController: CAPBridgeViewController {
         // iOS 17+: keep the webview processing while the app is backgrounded
         // (needed so JS timers/WebSockets keep running during background audio).
         // Note: a webview playing audio is also exempted from background suspension.
-        webView?.configuration.preferences.inactiveSchedulingPolicy = .nonStop
+        webView?.configuration.preferences.inactiveSchedulingPolicy = WKPreferences.InactiveSchedulingPolicy.none
     }
 }
